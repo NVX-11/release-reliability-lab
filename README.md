@@ -1,9 +1,9 @@
 # Release Reliability Lab
 
 Release Reliability Lab is a small FastAPI service for demonstrating reliable
-software delivery practices. Milestone 2 preserves the tested application from
-Milestone 1 and adds reproducible container packaging plus verification of the
-running container in CI.
+software delivery practices. Milestone 3 extends the tested container pipeline
+with publication of the exact verified image to GitHub Container Registry
+(GHCR). It does not deploy the image.
 
 ## Architecture
 
@@ -59,7 +59,7 @@ curl --fail http://127.0.0.1:8000/health
 curl --fail http://127.0.0.1:8000/version
 ```
 
-The image is not published by this milestone.
+Local builds are not published.
 
 ## Reproducibility and dependency updates
 
@@ -114,17 +114,82 @@ including the version imported from the application's version source. Any build,
 startup, HTTP, status, content, or version mismatch fails the job. A shell trap
 prints container logs on failure and always forcibly removes the test container.
 
+## Verified GHCR publication
+
+Pull requests and pushes run both the Python tests and the live-container smoke
+checks. After a successful smoke test, CI saves that image, its Docker image ID,
+and an archive checksum as a GitHub Actions workflow artifact retained for one
+day. The publication job downloads the artifact, checks the archive checksum,
+loads it, and requires its image ID to match before applying a registry tag.
+Publication therefore does not rebuild or substitute the tested image. Cleanup
+steps run even when verification or publication fails.
+
+Publication is restricted to successful pushes to `main` and depends on both
+verification jobs. Pull requests never authenticate to GHCR or publish. The
+publishing job alone receives `packages: write`; all jobs have only
+`contents: read` otherwise. It authenticates with the repository-provided
+`GITHUB_TOKEN`, not a personal token.
+
+The package name is:
+
+```text
+ghcr.io/nvx-11/release-reliability-lab
+```
+
+Every successful main-branch publication receives a unique full-commit tag:
+
+```text
+ghcr.io/nvx-11/release-reliability-lab:sha-<full-40-character-commit-SHA>
+```
+
+CI records the digest returned by GHCR, validates that it is a SHA-256 digest,
+and writes both the tag and immutable digest reference to the workflow job
+summary. For a published digest, pull and run the immutable artifact with:
+
+```bash
+docker pull ghcr.io/nvx-11/release-reliability-lab@sha256:<64-hex-character-digest>
+docker run --rm --publish 127.0.0.1:8000:8000 \
+  ghcr.io/nvx-11/release-reliability-lab@sha256:<64-hex-character-digest>
+```
+
+Find publications on the repository's **Packages** page. Open the
+`release-reliability-lab` package and locate the `sha-<commit>` version, or open
+the successful main-branch Actions run and read **Published verified
+container** in the publish job summary. The full commit in the tag and the OCI
+`org.opencontainers.image.revision` label identify the source revision. The
+image also carries `org.opencontainers.image.source` and
+`org.opencontainers.image.version` labels.
+
+These identifiers serve different purposes:
+
+* The **application version** (currently `0.1.0`) describes the software API and
+  is reported by `/version`; it is stored independently in `app/__init__.py`.
+* The **image tag** `sha-<full commit SHA>` is a convenient, traceable registry
+  name. Tags can technically be moved, so it is not an immutable deployment
+  identity.
+* The **registry digest** `sha256:<digest>` is content-addressed and immutable.
+  Future deployment automation should consume the `ghcr.io/...@sha256:...`
+  reference recorded by the workflow, rather than relying on a tag.
+
+The first main-branch publication may require a repository or organization
+administrator to allow GitHub Actions to create or write packages. If GHCR
+returns `permission_denied`, enable **Settings → Actions → General → Workflow
+permissions → Read and write permissions**, and ensure the package's **Manage
+Actions access** grants this repository write access. The workflow stops on
+that error and does not change repository, organization, or package visibility.
+
 ## Implemented scope and roadmap
 
 **Implemented functionality:** the FastAPI API, process-local task storage,
 automated Python tests, a least-privilege CI workflow, production-oriented
 container packaging, and a GitHub Actions job that performs live-container HTTP
-smoke checks. A Milestone 2 change is verified only when that Actions job passes.
+smoke checks. Successful pushes to `main` publish that exact verified image to
+GHCR and record its immutable digest.
 
-**Not implemented:** artifact publication (including GHCR), deployment, rollback,
-persistent storage, observability, cloud infrastructure, Kubernetes, Terraform,
-or public endpoints.
+**Not implemented:** deployment, rollback, persistent storage, observability,
+cloud infrastructure, Kubernetes, Terraform, or public endpoints. GHCR stores
+an artifact; it does not run or expose the application.
 
-The next milestone is artifact publication: produce and publish a traceable,
-versioned container image without adding deployment. Deployment and rollback are
-separate later milestones; persistence and observability can follow afterward.
+The next milestone is deployment of an explicitly selected immutable digest.
+Rollback remains a separate later milestone; persistence and observability can
+follow afterward.

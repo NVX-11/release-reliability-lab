@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -31,15 +33,24 @@ jobs:
         run: python -m pytest
 
   container:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    env:
+      IMAGE_NAME: release-reliability-lab:ci
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Build container image
-        run: docker build --tag release-reliability-lab:ci .
+        run: |
+          app_version=$(python -c 'from app import __version__; print(__version__)')
+          docker build --tag "$IMAGE_NAME" \
+            --build-arg "APP_VERSION=$app_version" \
+            --build-arg "VCS_REVISION=$GITHUB_SHA" .
 
       - name: Run container and verify HTTP endpoints
         shell: bash
@@ -59,7 +70,7 @@ jobs:
           trap cleanup EXIT
 
           docker run --detach --name "$container_name" \
-            --publish 127.0.0.1:8000:8000 release-reliability-lab:ci
+            --publish 127.0.0.1:8000:8000 "$IMAGE_NAME"
 
           health_body=$(mktemp)
           ready=false
@@ -89,3 +100,103 @@ jobs:
           python -c 'import json,sys; assert json.load(open(sys.argv[1])) == {"version": sys.argv[2]}' \
             "$version_body" "$expected_version"
           echo "GET /version -> HTTP 200 $(cat "$version_body")"
+
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE_NAME")" == "$GITHUB_SHA" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$IMAGE_NAME")" == "$expected_version" ]]
+
+      - name: Export verified image and identity
+        run: |
+          set -Eeuo pipefail
+          docker image inspect --format '{{.Id}}' "$IMAGE_NAME" > verified-image.id
+          docker save "$IMAGE_NAME" | gzip -1 > verified-image.tar.gz
+          sha256sum verified-image.tar.gz > verified-image.tar.gz.sha256
+
+      - name: Upload verified image
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-image-${{ github.sha }}
+          path: |
+            verified-image.tar.gz
+            verified-image.tar.gz.sha256
+            verified-image.id
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Clean up verification resources
+        if: always()
+        run: |
+          docker rm --force release-reliability-lab-smoke >/dev/null 2>&1 || true
+          docker image rm --force "$IMAGE_NAME" >/dev/null 2>&1 || true
+          rm -f verified-image.tar.gz verified-image.tar.gz.sha256 verified-image.id
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE_REPOSITORY: ghcr.io/nvx-11/release-reliability-lab
+      VERIFIED_IMAGE: release-reliability-lab:ci
+
+    steps:
+      - name: Download verified image
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-image-${{ github.sha }}
+
+      - name: Verify and load exact smoke-tested image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sha256sum --check verified-image.tar.gz.sha256
+          expected_id=$(cat verified-image.id)
+          gzip --decompress --stdout verified-image.tar.gz | docker load
+          actual_id=$(docker image inspect --format '{{.Id}}' "$VERIFIED_IMAGE")
+          [[ "$actual_id" == "$expected_id" ]] || {
+            echo "Transferred image ID mismatch: expected $expected_id, got $actual_id" >&2
+            exit 1
+          }
+          echo "Verified transferred image identity: $actual_id"
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish verified image and record digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected_id=$(cat verified-image.id)
+          image_ref="$IMAGE_REPOSITORY:sha-$GITHUB_SHA"
+          docker tag "$VERIFIED_IMAGE" "$image_ref"
+          [[ "$(docker image inspect --format '{{.Id}}' "$image_ref")" == "$expected_id" ]]
+
+          push_output=$(docker push "$image_ref" 2>&1 | tee /dev/stderr)
+          digest=$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' <<<"$push_output" | tail -n 1)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "GHCR did not return a valid sha256 digest" >&2
+            exit 1
+          }
+
+          digest_ref="$IMAGE_REPOSITORY@$digest"
+          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image_ref" | grep -Fx "$digest_ref"
+          {
+            echo "### Published verified container"
+            echo "- Tag: \`$image_ref\`"
+            echo "- Immutable reference: \`$digest_ref\`"
+            echo "- Application commit: \`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up publication resources
+        if: always()
+        run: |
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker image rm --force "$VERIFIED_IMAGE" "$IMAGE_REPOSITORY:sha-$GITHUB_SHA" >/dev/null 2>&1 || true
+          rm -f verified-image.tar.gz verified-image.tar.gz.sha256 verified-image.id
