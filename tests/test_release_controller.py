@@ -1,9 +1,14 @@
+import io
+from pathlib import Path
+
 import pytest
 
+import staging.release_controller as controller
 from staging.release_controller import REPOSITORY, SOURCE, normalize_image, render_nginx, verify_metadata
 
 DIGEST = "sha256:" + "a" * 64
 REFERENCE = f"{REPOSITORY}@{DIGEST}"
+REVISION = "b" * 40
 
 
 @pytest.mark.parametrize(
@@ -67,14 +72,16 @@ def test_metadata_rejects_each_identity_failure(field):
 
 
 def test_proxy_route_has_one_selected_backend_and_loopback_is_compose_owned():
-    active = render_nginx("active")
-    candidate = render_nginx("candidate")
+    active = render_nginx("active", REFERENCE, REVISION)
+    candidate = render_nginx("candidate", REFERENCE, "c" * 40)
     assert "server active:8000" in active
     assert "candidate:8000" not in active
     assert "server candidate:8000" in candidate
     assert "active:8000" not in candidate
+    assert f'add_header X-Release-Digest "{DIGEST}" always' in active
+    assert f'add_header X-Release-Revision "{REVISION}" always' in active
     # Resolve from the test module rather than relying on the pytest working directory.
-    compose_text = (__import__("pathlib").Path(__file__).parents[1] / "staging/compose.yml").read_text()
+    compose_text = (Path(__file__).parents[1] / "staging/compose.yml").read_text()
     assert '"127.0.0.1:8080:8080"' in compose_text
     assert "internal: true" in compose_text
     assert compose_text.count("ports:") == 1
@@ -82,4 +89,33 @@ def test_proxy_route_has_one_selected_backend_and_loopback_is_compose_owned():
 
 def test_render_rejects_unknown_backend():
     with pytest.raises(ValueError):
-        render_nginx("untrusted")
+        render_nginx("untrusted", REFERENCE, "b" * 40)
+
+
+class FakeResponse(io.BytesIO):
+    status = 200
+
+    def __init__(self, body, digest=DIGEST, revision="b" * 40):
+        super().__init__(body)
+        self.headers = {"X-Release-Digest": digest, "X-Release-Revision": revision}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def test_http_verification_requires_proxy_release_identity(monkeypatch):
+    monkeypatch.setattr(controller, "urlopen", lambda *_args, **_kwargs: FakeResponse(b'{"status":"healthy"}'))
+    controller.verify_http("http://stable", "/health", expected_digest=REFERENCE, expected_revision="b" * 40)
+
+
+def test_http_verification_rejects_wrong_proxy_release_identity(monkeypatch):
+    monkeypatch.setattr(
+        controller,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse(b'{"status":"healthy"}', digest="sha256:" + "c" * 64),
+    )
+    with pytest.raises(ValueError, match="release digest"):
+        controller.verify_http("http://stable", "/health", expected_digest=REFERENCE, expected_revision="b" * 40)

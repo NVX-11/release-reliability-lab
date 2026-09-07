@@ -25,7 +25,9 @@ Only Nginx publishes a host port, and it binds to loopback. Neither application
 container publishes a port. Compose creates an internal network unique to the
 workflow project. The complete Nginx configuration names exactly one stable
 backend; candidate checks run inside the proxy container and do not expose a
-second host entrypoint.
+second host entrypoint. Nginx replaces any backend-supplied identity headers
+with `X-Release-Digest` and `X-Release-Revision` values rendered only from
+validated local image metadata.
 
 The production image uses the slim Debian Python 3.12 image, installs only the
 locked runtime dependency set, copies only the `app` package, and runs Uvicorn
@@ -230,9 +232,15 @@ isolated network.
 
 Only a valid candidate reaches promotion. The controller renders a complete
 candidate route, asks Nginx to validate it, atomically replaces the route file,
-reloads Nginx, and checks the endpoints again through the stable entrypoint. If
-applying or verifying promotion fails, it restores and reloads the previous
-route. Candidate validation failure exits without changing the active route.
+reloads Nginx, and uses bounded, explicitly timed retries to check health,
+application version, immutable digest, and source revision again through the
+stable entrypoint. This identity check proves which selected release is serving
+even when active and candidate report the same application version. If applying
+or verifying promotion fails, recovery renders the previous validated identity,
+validates its complete configuration, reloads it, and repeats all four stable-
+route checks. Recovery is reported as successful only after those checks pass;
+otherwise the summary identifies an unresolved recovery failure. Candidate
+validation failure exits without changing the active route.
 The old `active` container receives a final health check and remains running
 beside the promoted candidate until guaranteed cleanup. This is minimal
 fail-safe recovery, not the automatic rollback or fault-injection policy planned
@@ -244,6 +252,14 @@ promotion outcome, and measured elapsed seconds. Failed-run container status and
 logs appear before cleanup. The deployment script traps errors, and an
 independent `if: always()` step removes containers, the network, generated
 route/inspection files, and the temporary Docker login.
+
+The manual workflow is also the bounded live staging integration test: it pulls
+the real baseline and candidate with `packages: read`, exercises actual Compose
+and Nginx, performs a controlled mismatched candidate-version validation and
+proves the active digest/revision headers remain unchanged, then performs the
+real promotion. It has no `pull_request` trigger, so untrusted pull-request code
+cannot receive the package-reading token. Run it only from a reviewed branch;
+the normal PR CI remains credential-free and cannot publish or deploy.
 
 This environment exists only on a GitHub-hosted runner for one bounded workflow
 job. It has no public endpoint, durable host, availability objective, or
