@@ -102,6 +102,23 @@ def test_cleanup_supplies_images_and_does_not_suppress_compose_failure():
     assert "bash staging/cleanup.sh" in workflow_text
 
 
+def test_topology_checks_do_not_make_unretried_http_requests():
+    deploy_text = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    topology_body = deploy_text.split("verify_topology() {", 1)[1].split("\n}\n", 1)[0]
+    assert "docker inspect" in topology_body
+    assert "PortBindings" in topology_body
+    assert "wget" not in topology_body
+    assert "http://" not in topology_body
+
+    # Active reachability is retried by verify_stable; candidate reachability is
+    # retried by its bounded 30-attempt loop after structural verification.
+    active_startup = deploy_text.split('verify_topology false', 1)[1]
+    assert 'verify_stable "$active_version"' in active_startup
+    candidate_startup = deploy_text.split('verify_topology true', 1)[1]
+    assert "for _ in {1..30}; do" in candidate_startup
+    assert "http://candidate:8000/health" in candidate_startup
+
+
 def test_render_rejects_unknown_backend():
     with pytest.raises(ValueError):
         render_nginx("untrusted", REFERENCE, "b" * 40)

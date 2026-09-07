@@ -142,8 +142,6 @@ if not binding or {(entry["HostIp"], entry["HostPort"]) for entry in binding} !=
     raise SystemExit(f"proxy binding was {binding!r}, expected loopback 127.0.0.1:8080")
 print("Verified runtime networks and loopback-only proxy binding")
 '
-  "${compose[@]}" exec -T proxy wget -qO- -T 2 http://active:8000/health | \
-    python -c 'import json,sys; assert json.load(sys.stdin) == {"status":"healthy"}'
 }
 
 restore_active() {
