@@ -29,3 +29,63 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build --tag release-reliability-lab:ci .
+
+      - name: Run container and verify HTTP endpoints
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          container_name=release-reliability-lab-smoke
+
+          cleanup() {
+            exit_code=$?
+            if (( exit_code != 0 )); then
+              echo "Container smoke test failed; container logs follow:"
+              docker logs "$container_name" 2>&1 || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
+
+          docker run --detach --name "$container_name" \
+            --publish 127.0.0.1:8000:8000 release-reliability-lab:ci
+
+          health_body=$(mktemp)
+          ready=false
+          for attempt in {1..30}; do
+            status=$(curl --silent --show-error --max-time 2 \
+              --output "$health_body" --write-out '%{http_code}' \
+              http://127.0.0.1:8000/health || true)
+            if [[ "$status" == "200" ]] && \
+              python -c 'import json,sys; assert json.load(open(sys.argv[1])) == {"status": "healthy"}' "$health_body" 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "true" ]]; then
+            echo "Service did not become ready within 30 attempts" >&2
+            exit 1
+          fi
+          echo "GET /health -> HTTP 200 $(cat "$health_body")"
+
+          expected_version=$(python -c 'from app import __version__; print(__version__)')
+          version_body=$(mktemp)
+          version_status=$(curl --silent --show-error --max-time 5 \
+            --output "$version_body" --write-out '%{http_code}' \
+            http://127.0.0.1:8000/version)
+          [[ "$version_status" == "200" ]]
+          python -c 'import json,sys; assert json.load(open(sys.argv[1])) == {"version": sys.argv[2]}' \
+            "$version_body" "$expected_version"
+          echo "GET /version -> HTTP 200 $(cat "$version_body")"
