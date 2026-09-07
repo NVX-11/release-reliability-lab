@@ -1,18 +1,33 @@
 # Release Reliability Lab
 
 Release Reliability Lab is a small FastAPI service for demonstrating reliable
-software delivery practices. Milestone 3 extends the tested container pipeline
-with publication of the exact verified image to GitHub Container Registry
-(GHCR). It does not deploy the image.
+software delivery practices. Milestone 4 adds a manually started, ephemeral staging
+exercise that pulls already-published images from GitHub Container Registry
+(GHCR) by digest, validates a candidate, and promotes it without rebuilding,
+retagging, or changing an application image.
 
 ## Architecture
 
 ```text
-Client -> port 8000 -> Uvicorn/FastAPI routes (`app/main.py`)
-                              |
-                              v
-                 Process-local task store (`app/store.py`)
+                         isolated Docker network
+                      +---------------------------+
+GitHub runner only    |                           |
+127.0.0.1:8080 ------> Nginx stable entrypoint   |
+                      |       |                   |
+                      |       +--> active:8000    | (previous release retained)
+                      |       `--> candidate:8000 | (only after promotion)
+                      +---------------------------+
+                                  |
+                         process-local task stores
 ```
+
+Only Nginx publishes a host port, and it binds to loopback. Neither application
+container publishes a port. Compose creates an internal network unique to the
+workflow project. The complete Nginx configuration names exactly one stable
+backend; candidate checks run inside the proxy container and do not expose a
+second host entrypoint. Nginx replaces any backend-supplied identity headers
+with `X-Release-Digest` and `X-Release-Revision` values rendered only from
+validated local image metadata.
 
 The production image uses the slim Debian Python 3.12 image, installs only the
 locked runtime dependency set, copies only the `app` package, and runs Uvicorn
@@ -178,18 +193,95 @@ permissions → Read and write permissions**, and ensure the package's **Manage
 Actions access** grants this repository write access. The workflow stops on
 that error and does not change repository, organization, or package visibility.
 
+## Ephemeral staging and verified promotion
+
+Build, publication, and deployment deliberately remain separate. `ci.yml`
+tests and builds the application, then publishes the exact tested artifact only
+from `main`. `staging.yml` is manual and never builds, pushes, tags, deletes, or
+overwrites an application image. Its checked-out Git commit identifies the
+**deployment controller**, while the OCI revision label identifies the source
+commit inside each **application image**; the workflow summary reports these as
+different values.
+
+To run the staging exercise in GitHub:
+
+1. Open **Actions → Ephemeral staging deployment → Run workflow** and select the
+   controller branch (normally `main` after this change is merged).
+2. On the repository **Packages** page, open `release-reliability-lab`, choose a
+   published version, and copy its `sha256:` digest. Alternatively, copy the
+   immutable reference from a successful CI run's **Published verified
+   container** job summary.
+3. Paste either the complete
+   `ghcr.io/nvx-11/release-reliability-lab@sha256:<64 lowercase hex>` reference
+   or just its complete `sha256:<64 lowercase hex>` digest into **candidate
+   image**. The controller prepends the one approved repository for digest-only
+   input; tags, other repositories, uppercase or partial digests, and shell-like
+   suffixes are rejected before registry login or Compose use.
+4. Leave the documented Milestone 3 baseline in **baseline image**, or supply a
+   different known-healthy immutable release. The default is a known baseline,
+   not a claim that it is latest; every run must pull and validate it.
+5. Select **Run workflow**. No deployment occurs on a pull request or CI push.
+
+The controller pulls both exact digests using only the run's `GITHUB_TOKEN`,
+then requires each local `RepoDigests` identity and the OCI source, full Git
+revision, and application-version labels to be valid. It starts the baseline as
+`active`, renders the stable route, and checks exact `/health` and `/version`
+JSON through `127.0.0.1:8080` with bounded readiness retries. It next starts
+`candidate` without changing that route and checks both endpoints over the
+isolated network.
+
+Only a valid candidate reaches promotion. The controller renders a complete
+candidate route, asks Nginx to validate it, atomically replaces the route file,
+reloads Nginx, and uses bounded, explicitly timed retries to check health,
+application version, immutable digest, and source revision again through the
+stable entrypoint. This identity check proves which selected release is serving
+even when active and candidate report the same application version. If applying
+or verifying promotion fails, recovery renders the previous validated identity,
+validates its complete configuration, reloads it, and repeats all four stable-
+route checks. Recovery is reported as successful only after those checks pass;
+otherwise the summary identifies an unresolved recovery failure. Candidate
+validation failure exits without changing the active route.
+The old `active` container receives a final health check and remains running
+beside the promoted candidate until guaranteed cleanup. This is minimal
+fail-safe recovery, not the automatic rollback or fault-injection policy planned
+for the next milestone.
+
+Open the run's **Summary** to see requested immutable identities, source
+revisions, application versions, old and new active digests, validation result,
+promotion outcome, and measured elapsed seconds. Failed-run container status and
+logs appear before cleanup. The deployment script traps errors, and an
+independent `if: always()` step removes containers, the network, generated
+route/inspection files, and the temporary Docker login.
+
+The manual workflow is also the bounded live staging integration test: it pulls
+the real baseline and candidate with `packages: read`, exercises actual Compose
+and Nginx, performs a controlled mismatched candidate-version validation and
+proves the active digest/revision headers remain unchanged, then performs the
+real promotion. It has no `pull_request` trigger, so untrusted pull-request code
+cannot receive the package-reading token. Run it only from a reviewed branch;
+the normal PR CI remains credential-free and cannot publish or deploy.
+
+This environment exists only on a GitHub-hosted runner for one bounded workflow
+job. It has no public endpoint, durable host, availability objective, or
+production credentials. Application data is process-local: active and candidate
+have separate task stores, and all tasks are lost when either container is
+replaced or removed.
+
+Using the baseline as both active and candidate exercises the mechanism but is
+**not** evidence of a transition between distinct releases. That proof requires
+a second legitimate image created by the unchanged CI/GHCR publication path;
+provide its real digest as candidate and retain the workflow run as evidence.
+
 ## Implemented scope and roadmap
 
 **Implemented functionality:** the FastAPI API, process-local task storage,
 automated Python tests, a least-privilege CI workflow, production-oriented
 container packaging, and a GitHub Actions job that performs live-container HTTP
 smoke checks. Successful pushes to `main` publish that exact verified image to
-GHCR and record its immutable digest.
+GHCR and record its immutable digest. A separate manual workflow performs the
+active/candidate staging deployment and verified route promotion.
 
-**Not implemented:** deployment, rollback, persistent storage, observability,
-cloud infrastructure, Kubernetes, Terraform, or public endpoints. GHCR stores
-an artifact; it does not run or expose the application.
-
-The next milestone is deployment of an explicitly selected immutable digest.
-Rollback remains a separate later milestone; persistence and observability can
-follow afterward.
+**Not implemented:** automatic rollback policy, fault injection, persistent
+storage, production hosting, observability, cloud infrastructure, Kubernetes,
+Terraform, or public endpoints. The next milestone can build rollback
+experiments on the retained previous container.

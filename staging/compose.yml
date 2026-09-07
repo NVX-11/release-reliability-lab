@@ -1,0 +1,26 @@
+services:
+  active:
+    image: "${ACTIVE_IMAGE:?ACTIVE_IMAGE is required}"
+    init: true
+    restart: "no"
+    networks: [staging]
+
+  candidate:
+    image: "${CANDIDATE_IMAGE:?CANDIDATE_IMAGE is required}"
+    init: true
+    restart: "no"
+    networks: [staging]
+
+  proxy:
+    image: nginx:1.27.4-alpine@sha256:4ff102c5d78d254a6f0da062b3cf39eaf07f01eec0927fd21e219d0af8bc0591
+    restart: "no"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./generated:/etc/nginx/generated:ro
+    command: ["nginx", "-c", "/etc/nginx/generated/nginx.conf", "-g", "daemon off;"]
+    networks: [staging]
+
+networks:
+  staging:
+    internal: true

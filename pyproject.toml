@@ -22,3 +22,6 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config -ra"
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
