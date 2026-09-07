@@ -1,0 +1,56 @@
+name: Ephemeral staging deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_image:
+        description: "Approved GHCR digest or full immutable reference"
+        required: true
+        type: string
+      baseline_image:
+        description: "Current healthy digest/reference (known Milestone 3 baseline by default)"
+        required: true
+        default: "ghcr.io/nvx-11/release-reliability-lab@sha256:1c3462d30f0d9e1c3fadfd2163ecae4828853e7c34f8a5bbf6cd9694acfda938"
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  stage-and-promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BASELINE_IMAGE: ${{ inputs.baseline_image }}
+      CANDIDATE_IMAGE_INPUT: ${{ inputs.candidate_image }}
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check out deployment controller
+        uses: actions/checkout@v4
+
+      - name: Validate requested immutable identities
+        run: |
+          python staging/release_controller.py normalize "$BASELINE_IMAGE"
+          python staging/release_controller.py normalize "$CANDIDATE_IMAGE_INPUT"
+
+      - name: Pull, verify, stage, and promote published images
+        run: bash staging/deploy.sh
+
+      - name: Show diagnostic container state on failure
+        if: failure()
+        run: |
+          docker compose --project-name release-reliability-staging --file staging/compose.yml ps --all || true
+          docker compose --project-name release-reliability-staging --file staging/compose.yml logs --no-color || true
+
+      - name: Guarantee staging cleanup
+        if: always()
+        run: |
+          docker compose --project-name release-reliability-staging --file staging/compose.yml down --volumes --remove-orphans || true
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          rm -rf staging/generated
