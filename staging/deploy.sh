@@ -8,6 +8,11 @@ compose=(docker compose --project-name release-reliability-staging --file stagin
 generated=staging/generated
 mkdir -p "$generated"
 
+# The EXIT trap can run before inputs are validated. Compose still interpolates
+# image fields for diagnostic and down commands, so seed cleanup-safe values now.
+cleanup_image="ghcr.io/nvx-11/release-reliability-lab@sha256:1c3462d30f0d9e1c3fadfd2163ecae4828853e7c34f8a5bbf6cd9694acfda938"
+export ACTIVE_IMAGE="$cleanup_image" CANDIDATE_IMAGE="$cleanup_image"
+
 started_at=$SECONDS
 promotion="not attempted"
 active_ref=""
@@ -60,7 +65,13 @@ cleanup() {
     "${compose[@]}" ps --all >&2 || true
     "${compose[@]}" logs --no-color >&2 || true
   fi
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  local cleanup_result=0
+  "${compose[@]}" down --volumes --remove-orphans || cleanup_result=$?
+  if (( cleanup_result != 0 )); then
+    echo "Staging cleanup failed with exit code $cleanup_result" >&2
+    # Preserve a deployment error; otherwise surface cleanup as the step error.
+    (( result != 0 )) || result=$cleanup_result
+  fi
   docker logout ghcr.io >/dev/null 2>&1 || true
   rm -rf "$generated"
   exit "$result"
@@ -102,6 +113,37 @@ verify_stable() {
   return 1
 }
 
+verify_topology() {
+  local include_candidate=${1:-false}
+  local active_id proxy_id candidate_id=""
+  active_id=$("${compose[@]}" ps --quiet active)
+  proxy_id=$("${compose[@]}" ps --quiet proxy)
+  [[ -n "$active_id" && -n "$proxy_id" ]]
+  if [[ "$include_candidate" == true ]]; then
+    candidate_id=$("${compose[@]}" ps --quiet candidate)
+    [[ -n "$candidate_id" ]]
+  fi
+
+  docker inspect "$active_id" "$proxy_id" ${candidate_id:+"$candidate_id"} | python -c '
+import json, sys
+documents = json.load(sys.stdin)
+by_service = {item["Config"]["Labels"]["com.docker.compose.service"]: item for item in documents}
+expected = {"active": {"application"}, "proxy": {"application", "edge"}}
+if "candidate" in by_service:
+    expected["candidate"] = {"application"}
+for service, networks in expected.items():
+    actual = {name.rsplit("_", 1)[-1] for name in by_service[service]["NetworkSettings"]["Networks"]}
+    if actual != networks:
+        raise SystemExit(f"{service} networks were {sorted(actual)}, expected {sorted(networks)}")
+    if service != "proxy" and by_service[service]["HostConfig"].get("PortBindings"):
+        raise SystemExit(f"{service} unexpectedly publishes a host port")
+binding = by_service["proxy"]["HostConfig"]["PortBindings"].get("8080/tcp")
+if not binding or {(entry["HostIp"], entry["HostPort"]) for entry in binding} != {("127.0.0.1", "8080")}:
+    raise SystemExit(f"proxy binding was {binding!r}, expected loopback 127.0.0.1:8080")
+print("Verified runtime networks and loopback-only proxy binding")
+'
+}
+
 restore_active() {
   recovery="attempting restoration of previous validated route"
   "${controller[@]}" render active "$active_ref" "$active_revision" "$generated/nginx.restore.conf" || {
@@ -122,6 +164,8 @@ restore_active() {
 
 "${controller[@]}" render active "$active_ref" "$active_revision" "$generated/nginx.conf"
 "${compose[@]}" up --detach --no-build active proxy
+"${compose[@]}" ps --all
+verify_topology false
 readiness_started=$SECONDS
 verify_stable "$active_version" "$active_ref" "$active_revision"
 active_ready_seconds=$((SECONDS - readiness_started))
@@ -129,6 +173,7 @@ active_validation="passed metadata, readiness, health, version, and release iden
 previous_ref="$active_ref"
 
 "${compose[@]}" up --detach --no-build candidate
+verify_topology true
 readiness_started=$SECONDS
 candidate_ok=false
 for _ in {1..30}; do

@@ -29,6 +29,10 @@ jobs:
       CANDIDATE_IMAGE_INPUT: ${{ inputs.candidate_image }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Safe interpolation values for independent diagnostics and cleanup. The
+      # deployment process replaces these only after validating both inputs.
+      ACTIVE_IMAGE: ghcr.io/nvx-11/release-reliability-lab@sha256:1c3462d30f0d9e1c3fadfd2163ecae4828853e7c34f8a5bbf6cd9694acfda938
+      CANDIDATE_IMAGE: ghcr.io/nvx-11/release-reliability-lab@sha256:1c3462d30f0d9e1c3fadfd2163ecae4828853e7c34f8a5bbf6cd9694acfda938
 
     steps:
       - name: Check out deployment controller
@@ -50,7 +54,4 @@ jobs:
 
       - name: Guarantee staging cleanup
         if: always()
-        run: |
-          docker compose --project-name release-reliability-staging --file staging/compose.yml down --volumes --remove-orphans || true
-          docker logout ghcr.io >/dev/null 2>&1 || true
-          rm -rf staging/generated
+        run: bash staging/cleanup.sh
