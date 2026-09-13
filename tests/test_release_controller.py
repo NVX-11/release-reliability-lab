@@ -173,6 +173,8 @@ def test_fault_success_requires_detection_and_verified_previous_identity():
 
 def test_summary_and_incident_report_contain_required_recovery_evidence():
     deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    assert 'echo "| Restored stable release identity | \\`$restored_identity\\` |"' in deploy
+    assert 'echo "| Restored stable release identity | `$restored_identity` |"' not in deploy
     for summary_field in (
         "Fault mode",
         "Fault injection result",

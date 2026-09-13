@@ -100,7 +100,7 @@ summary() {
       echo "| Failure detection result | $failure_detection |"
       echo "| Rollback attempted | $rollback_attempted |"
       echo "| Rollback result | $rollback_result |"
-      echo "| Restored stable release identity | `$restored_identity` |"
+      echo "| Restored stable release identity | \`$restored_identity\` |"
       echo "| Recovery verification result | $recovery_verification |"
       echo "| Previous immutable release | \`${previous_ref:-not started}\` |"
       echo "| Newly active immutable release | \`$new_active\` |"

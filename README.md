@@ -300,6 +300,4 @@ GHCR and record its immutable digest. A separate manual workflow performs the
 active/candidate staging deployment and verified route promotion.
 
 **Not implemented:** persistent storage, production hosting, observability,
-cloud infrastructure, Kubernetes,
-Terraform, or public endpoints. The next milestone can build rollback
-experiments on the retained previous container.
+cloud infrastructure, Kubernetes, Terraform, or public endpoints.
