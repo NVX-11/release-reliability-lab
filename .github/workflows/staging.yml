@@ -36,7 +36,6 @@ jobs:
       BASELINE_IMAGE: ${{ inputs.baseline_image }}
       CANDIDATE_IMAGE_INPUT: ${{ inputs.candidate_image }}
       FAULT_MODE: ${{ inputs.fault_mode }}
-      INCIDENT_REPORT_PATH: ${{ runner.temp }}/release-reliability-incident.json
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Safe interpolation values for independent diagnostics and cleanup. The
@@ -54,6 +53,8 @@ jobs:
           python staging/release_controller.py normalize "$CANDIDATE_IMAGE_INPUT"
 
       - name: Pull, verify, stage, and promote published images
+        env:
+          INCIDENT_REPORT_PATH: ${{ runner.temp }}/release-reliability-incident.json
         run: bash staging/deploy.sh
 
       - name: Upload controlled-fault incident report
