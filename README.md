@@ -47,6 +47,7 @@ version reported by `/version` remains centralized in `app/__init__.py`.
 | --- | --- | --- |
 | `GET` | `/health` | Report service health |
 | `GET` | `/version` | Report the application version |
+| `GET` | `/info` | Report stable service name and version metadata |
 | `POST` | `/tasks` | Create a task |
 | `GET` | `/tasks` | List tasks |
 | `GET` | `/tasks/{task_id}` | Fetch a task |
@@ -72,6 +73,7 @@ host. In another terminal, verify it:
 ```bash
 curl --fail http://127.0.0.1:8000/health
 curl --fail http://127.0.0.1:8000/version
+curl --fail http://127.0.0.1:8000/info
 ```
 
 Local builds are not published.
@@ -177,7 +179,7 @@ image also carries `org.opencontainers.image.source` and
 
 These identifiers serve different purposes:
 
-* The **application version** (currently `0.1.0`) describes the software API and
+* The **application version** (currently `0.1.1`) describes the software API and
   is reported by `/version`; it is stored independently in `app/__init__.py`.
 * The **image tag** `sha-<full commit SHA>` is a convenient, traceable registry
   name. Tags can technically be moved, so it is not an immutable deployment
