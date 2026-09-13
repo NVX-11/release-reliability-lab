@@ -10,6 +10,7 @@ from app.store import task_store
 
 app = FastAPI(title="Release Reliability Lab", version=__version__)
 TaskId = Annotated[int, Path(gt=0)]
+SERVICE_NAME = "release-reliability-lab"
 
 
 @app.get("/health", tags=["service"])
@@ -20,6 +21,11 @@ def health() -> dict[str, str]:
 @app.get("/version", tags=["service"])
 def version() -> dict[str, str]:
     return {"version": __version__}
+
+
+@app.get("/info", tags=["service"])
+def info() -> dict[str, str]:
+    return {"service": SERVICE_NAME, "version": __version__}
 
 
 @app.post("/tasks", response_model=Task, status_code=status.HTTP_201_CREATED)

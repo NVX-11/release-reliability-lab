@@ -16,4 +16,15 @@ def test_version_reports_package_version(client: TestClient) -> None:
     response = client.get("/version")
 
     assert response.status_code == 200
-    assert response.json() == {"version": __version__}
+    assert __version__ == "0.1.1"
+    assert response.json() == {"version": "0.1.1"}
+
+
+def test_info_reports_stable_service_metadata(client: TestClient) -> None:
+    response = client.get("/info")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "release-reliability-lab",
+        "version": "0.1.1",
+    }
