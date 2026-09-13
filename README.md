@@ -1,9 +1,10 @@
 # Release Reliability Lab
 
 Release Reliability Lab is a small FastAPI service for demonstrating reliable
-software delivery practices. Milestone 4 adds a manually started, ephemeral staging
+software delivery practices. This branch proposes the Milestone 5 extension to the manually started, ephemeral staging
 exercise that pulls already-published images from GitHub Container Registry
-(GHCR) by digest, validates a candidate, and promotes it without rebuilding,
+(GHCR) by digest, validates a candidate, promotes it, and can prove automatic
+rollback after a controlled post-promotion routing failure, without rebuilding,
 retagging, or changing an application image.
 
 ## Architecture
@@ -222,7 +223,10 @@ To run the staging exercise in GitHub:
 4. Leave the documented Milestone 3 baseline in **baseline image**, or supply a
    different known-healthy immutable release. The default is a known baseline,
    not a claim that it is latest; every run must pull and validate it.
-5. Select **Run workflow**. No deployment occurs on a pull request or CI push.
+5. Leave **fault mode** set to `none` for the unchanged promotion exercise. To
+   exercise rollback, explicitly select `post_promotion_backend_failure`. Run this
+   option only from trusted `main` after review and merge.
+6. Select **Run workflow**. No deployment occurs on a pull request or CI push.
 
 The controller pulls both exact digests using only the run's `GITHUB_TOKEN`,
 then requires each local `RepoDigests` identity and the OCI source, full Git
@@ -241,12 +245,19 @@ even when active and candidate report the same application version. If applying
 or verifying promotion fails, recovery renders the previous validated identity,
 validates its complete configuration, reloads it, and repeats all four stable-
 route checks. Recovery is reported as successful only after those checks pass;
-otherwise the summary identifies an unresolved recovery failure. Candidate
-validation failure exits without changing the active route.
-The old `active` container receives a final health check and remains running
-beside the promoted candidate until guaranteed cleanup. This is minimal
-fail-safe recovery, not the automatic rollback or fault-injection policy planned
-for the next milestone.
+otherwise the summary identifies an unresolved recovery failure. Candidate validation failure exits without changing the active route.
+
+With the opt-in fault mode, the controller first completes that exact normal
+promotion and proves the candidate identity through the stable endpoint. It
+then installs a syntactically valid Nginx route whose backend is the unreachable
+`candidate:65535`, while retaining the validated candidate digest and revision
+headers. Nginx validation and reload must succeed; bounded stable-route
+verification must then fail. If the outage does not occur, the exercise fails.
+Once detected, recovery renders and validates the previous route, reloads it,
+and requires exact health, version, immutable digest, and revision checks through
+the stable endpoint. The fault exercise succeeds only after that recovery proof;
+an unverified or wrong previous identity fails. The old `active` container
+remains available for rollback until guaranteed cleanup.
 
 Open the run's **Summary** to see requested immutable identities, source
 revisions, application versions, old and new active digests, validation result,
@@ -254,6 +265,11 @@ promotion outcome, and measured elapsed seconds. Failed-run container status and
 logs appear before cleanup. The deployment script traps errors, and an
 independent `if: always()` step removes containers, the network, generated
 route/inspection files, and the temporary Docker login.
+
+Controlled-fault runs also upload a machine-generated JSON incident report for
+14 days. It records both identities, the injection, detection and impact,
+rollback action, recovery proof, final stable identity, outcome, and elapsed
+time. It contains no credentials or runner host details.
 
 The manual workflow is also the bounded live staging integration test: it pulls
 the real baseline and candidate with `packages: read`, exercises actual Compose
@@ -283,7 +299,5 @@ smoke checks. Successful pushes to `main` publish that exact verified image to
 GHCR and record its immutable digest. A separate manual workflow performs the
 active/candidate staging deployment and verified route promotion.
 
-**Not implemented:** automatic rollback policy, fault injection, persistent
-storage, production hosting, observability, cloud infrastructure, Kubernetes,
-Terraform, or public endpoints. The next milestone can build rollback
-experiments on the retained previous container.
+**Not implemented:** persistent storage, production hosting, observability,
+cloud infrastructure, Kubernetes, Terraform, or public endpoints.

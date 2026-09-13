@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 import staging.release_controller as controller
-from staging.release_controller import REPOSITORY, SOURCE, normalize_image, render_nginx, verify_metadata
+from staging.release_controller import (
+    REPOSITORY,
+    SOURCE,
+    normalize_fault_mode,
+    normalize_image,
+    render_nginx,
+    verify_metadata,
+)
 
 DIGEST = "sha256:" + "a" * 64
 REFERENCE = f"{REPOSITORY}@{DIGEST}"
@@ -122,6 +129,77 @@ def test_topology_checks_do_not_make_unretried_http_requests():
 def test_render_rejects_unknown_backend():
     with pytest.raises(ValueError):
         render_nginx("untrusted", REFERENCE, "b" * 40)
+
+
+def test_fault_mode_none_is_explicit_and_unsupported_modes_are_rejected():
+    assert normalize_fault_mode("none") == "none"
+    assert normalize_fault_mode("post_promotion_backend_failure") == "post_promotion_backend_failure"
+    with pytest.raises(ValueError, match="unsupported fault mode"):
+        normalize_fault_mode("post-promotion-typo")
+
+
+def test_fault_route_is_valid_shape_but_uses_an_unreachable_candidate_port():
+    rendered = render_nginx("post_promotion_backend_failure", REFERENCE, REVISION)
+    assert "server candidate:65535;" in rendered
+    assert "server candidate:8000;" not in rendered
+    assert f'add_header X-Release-Digest "{DIGEST}" always' in rendered
+    assert f'add_header X-Release-Revision "{REVISION}" always' in rendered
+
+
+def test_fault_is_opt_in_and_occurs_only_after_verified_promotion():
+    root = Path(__file__).parents[1]
+    workflow = (root / ".github/workflows/staging.yml").read_text()
+    deploy = (root / "staging/deploy.sh").read_text()
+    assert "default: none" in workflow
+    assert "FAULT_MODE: ${{ inputs.fault_mode }}" in workflow
+    assert 'fault_mode=$("${controller[@]}" fault-mode "${FAULT_MODE:-none}")' in deploy
+    promotion_verified = deploy.index('promotion="successful: candidate identity verified through stable route"')
+    fault_branch = deploy.index('if [[ "$fault_mode" == "post_promotion_backend_failure" ]]', promotion_verified)
+    fault_render = deploy.index("render post_promotion_backend_failure", fault_branch)
+    assert promotion_verified < fault_branch < fault_render
+
+
+def test_fault_success_requires_detection_and_verified_previous_identity():
+    deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    fault_body = deploy.split('if [[ "$fault_mode" == "post_promotion_backend_failure" ]]', 1)[1]
+    assert 'if verify_stable "$candidate_version" "$candidate_ref" "$candidate_revision"' in fault_body
+    assert "restore_active || exit 1" in fault_body
+    restore_body = deploy.split("restore_active() {", 1)[1].split("\n}", 1)[0]
+    assert 'verify_stable "$active_version" "$active_ref" "$active_revision"' in restore_body
+    assert 'rollback_result="successful"' in restore_body
+    assert 'recovery_verification="passed health, version, immutable digest, and revision"' in restore_body
+    assert "return 1" in restore_body
+
+
+def test_summary_and_incident_report_contain_required_recovery_evidence():
+    deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    assert 'echo "| Restored stable release identity | \\`$restored_identity\\` |"' in deploy
+    assert 'echo "| Restored stable release identity | `$restored_identity` |"' not in deploy
+    for summary_field in (
+        "Fault mode",
+        "Fault injection result",
+        "Failure detection result",
+        "Rollback attempted",
+        "Rollback result",
+        "Restored stable release identity",
+        "Recovery verification result",
+        "Cleanup",
+    ):
+        assert f'echo "| {summary_field} |' in deploy
+    for report_field in (
+        '"incident_type"',
+        '"previous_release_identity"',
+        '"candidate_release_identity"',
+        '"injected_failure"',
+        '"detection_mechanism"',
+        '"observed_impact"',
+        '"rollback_action"',
+        '"recovery_verification"',
+        '"final_stable_identity"',
+        '"outcome"',
+        '"timing"',
+    ):
+        assert report_field in deploy
 
 
 class FakeResponse(io.BytesIO):

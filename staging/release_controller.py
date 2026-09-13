@@ -15,6 +15,14 @@ REPOSITORY = "ghcr.io/nvx-11/release-reliability-lab"
 SOURCE = "https://github.com/NVX-11/release-reliability-lab"
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 REVISION_RE = re.compile(r"[0-9a-f]{40}\Z")
+FAULT_MODES = {"none", "post_promotion_backend_failure"}
+
+
+def normalize_fault_mode(value: str) -> str:
+    """Reject unknown modes rather than silently enabling or ignoring a fault."""
+    if value not in FAULT_MODES:
+        raise ValueError(f"unsupported fault mode: {value!r}")
+    return value
 
 
 def normalize_image(value: str) -> str:
@@ -51,8 +59,15 @@ def verify_metadata(document: dict[str, object], expected_ref: str) -> dict[str,
 
 
 def render_nginx(backend: str, digest: str, revision: str) -> str:
-    if backend not in {"active", "candidate"}:
-        raise ValueError("backend must be active or candidate")
+    targets = {
+        "active": "active:8000",
+        "candidate": "candidate:8000",
+        # Valid Nginx configuration, but deliberately unreachable. This mode is
+        # selected only after a candidate has been promoted and verified.
+        "post_promotion_backend_failure": "candidate:65535",
+    }
+    if backend not in targets:
+        raise ValueError("backend must be active, candidate, or post_promotion_backend_failure")
     normalized = normalize_image(digest)
     digest = normalized.rsplit("@", 1)[1]
     if not REVISION_RE.fullmatch(revision):
@@ -64,7 +79,7 @@ pid /var/run/nginx.pid;
 events {{ worker_connections 128; }}
 http {{
   access_log /var/log/nginx/access.log;
-  upstream selected_release {{ server {backend}:8000; }}
+  upstream selected_release {{ server {targets[backend]}; }}
   server {{
     listen 8080;
     add_header X-Release-Digest "{digest}" always;
@@ -111,11 +126,13 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     normalize = commands.add_parser("normalize")
     normalize.add_argument("image")
+    fault_mode = commands.add_parser("fault-mode")
+    fault_mode.add_argument("value")
     metadata = commands.add_parser("metadata")
     metadata.add_argument("image")
     metadata.add_argument("inspect_json", type=Path)
     render = commands.add_parser("render")
-    render.add_argument("backend", choices=("active", "candidate"))
+    render.add_argument("backend", choices=("active", "candidate", "post_promotion_backend_failure"))
     render.add_argument("digest")
     render.add_argument("revision")
     render.add_argument("output", type=Path)
@@ -129,6 +146,8 @@ def main() -> int:
     try:
         if args.command == "normalize":
             print(normalize_image(args.image))
+        elif args.command == "fault-mode":
+            print(normalize_fault_mode(args.value))
         elif args.command == "metadata":
             documents = json.loads(args.inspect_json.read_text())
             if not isinstance(documents, list) or len(documents) != 1:
