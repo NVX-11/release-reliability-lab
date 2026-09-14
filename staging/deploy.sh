@@ -52,6 +52,7 @@ availability_recovery="not requested"
 availability_duration="n/a"
 availability_final="not requested"
 availability_result="not requested"
+observer_evidence_failure=false
 
 set_observer_phase() {
   [[ "$observer_mode" == enabled ]] || return 0
@@ -71,6 +72,16 @@ PY
     sleep 1
   done
   return 1
+}
+
+collect_observation_evidence() {
+  local phase=$1 state=$2
+  if ! wait_for_observation "$phase" "$state"; then
+    observer_evidence_failure=true
+    availability_result="failure: missing $phase $state observation"
+    echo "Availability observer did not record $phase $state evidence; release-controller processing continues" >&2
+  fi
+  return 0
 }
 
 stop_observer() {
@@ -331,7 +342,7 @@ if [[ "$observer_mode" == enabled ]]; then
 fi
 readiness_started=$SECONDS
 verify_stable "$active_version" "$active_ref" "$active_revision"
-[[ "$observer_mode" != enabled ]] || wait_for_observation baseline healthy
+[[ "$observer_mode" != enabled ]] || collect_observation_evidence baseline healthy
 active_ready_seconds=$((SECONDS - readiness_started))
 active_validation="passed metadata, readiness, health, version, and release identity"
 previous_ref="$active_ref"
@@ -398,7 +409,7 @@ promotion_seconds=$((SECONDS - promotion_started))
 promotion="successful: candidate identity verified through stable route"
 if [[ "$observer_mode" == enabled ]]; then
   set_observer_phase candidate
-  wait_for_observation candidate healthy
+  collect_observation_evidence candidate healthy
 fi
 
 if [[ "$fault_mode" == "post_promotion_backend_failure" ]]; then
@@ -424,13 +435,13 @@ if [[ "$fault_mode" == "post_promotion_backend_failure" ]]; then
     exit 1
   fi
   failure_detection="successful: bounded stable-route verification detected candidate outage"
-  [[ "$observer_mode" != enabled ]] || wait_for_observation outage unavailable
+  [[ "$observer_mode" != enabled ]] || collect_observation_evidence outage unavailable
   restore_active || exit 1
   if [[ "$observer_mode" == enabled ]]; then
     set_observer_phase recovery
-    wait_for_observation recovery healthy
+    collect_observation_evidence recovery healthy
     stop_observer
-    [[ "$availability_result" == success ]] || exit 1
+    [[ "$observer_evidence_failure" == false && "$availability_result" == success ]] || exit 1
   fi
 fi
 

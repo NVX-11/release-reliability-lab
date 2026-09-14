@@ -93,3 +93,39 @@ def test_deployment_and_artifact_upload_share_runner_temp_report_path():
     assert f"path: {expected}" in upload_step
     job_env = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
     assert "AVAILABILITY_REPORT_PATH" not in job_env
+
+
+def test_missing_baseline_or_candidate_evidence_does_not_gate_controller_progression():
+    deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    collector = deploy.split("collect_observation_evidence() {", 1)[1].split("\n}", 1)[0]
+    assert 'if ! wait_for_observation "$phase" "$state"; then' in collector
+    assert "observer_evidence_failure=true" in collector
+    assert "return 0" in collector
+
+    baseline = deploy.index("collect_observation_evidence baseline healthy")
+    candidate_start = deploy.index('"${compose[@]}" up --detach --no-build candidate')
+    candidate_evidence = deploy.index("collect_observation_evidence candidate healthy")
+    fault_start = deploy.index(
+        'if [[ "$fault_mode" == "post_promotion_backend_failure" ]]', candidate_evidence
+    )
+    assert baseline < candidate_start
+    assert candidate_evidence < fault_start
+
+
+def test_missing_outage_evidence_cannot_prevent_rollback():
+    deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    fault = deploy.split('if [[ "$fault_mode" == "post_promotion_backend_failure" ]]', 1)[1]
+    outage_evidence = fault.index("collect_observation_evidence outage unavailable")
+    rollback = fault.index("restore_active || exit 1")
+    assert outage_evidence < rollback
+    assert "wait_for_observation outage unavailable\n  restore_active" not in fault
+
+
+def test_recovery_precedes_final_availability_evidence_failure():
+    deploy = (Path(__file__).parents[1] / "staging/deploy.sh").read_text()
+    fault = deploy.split('if [[ "$fault_mode" == "post_promotion_backend_failure" ]]', 1)[1]
+    rollback = fault.index("restore_active || exit 1")
+    recovery_evidence = fault.index("collect_observation_evidence recovery healthy", rollback)
+    finalize = fault.index("stop_observer", recovery_evidence)
+    evidence_failure = fault.index('[[ "$observer_evidence_failure" == false', finalize)
+    assert rollback < recovery_evidence < finalize < evidence_failure
