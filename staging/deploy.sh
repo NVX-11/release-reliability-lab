@@ -40,6 +40,68 @@ recovery_verification="not required"
 restored_identity="not applicable"
 cleanup_result_text="pending"
 total_result="running"
+observer_mode="disabled"
+observer_pid=""
+observer_phase_file="$generated/availability.phase"
+observer_observations="$generated/availability-observations.jsonl"
+observer_report=${AVAILABILITY_REPORT_PATH:-availability-report.json}
+availability_baseline="not requested"
+availability_candidate="not requested"
+availability_outage="not requested"
+availability_recovery="not requested"
+availability_duration="n/a"
+availability_final="not requested"
+availability_result="not requested"
+
+set_observer_phase() {
+  [[ "$observer_mode" == enabled ]] || return 0
+  printf '%s\n' "$1" > "$observer_phase_file.tmp"
+  mv "$observer_phase_file.tmp" "$observer_phase_file"
+}
+
+wait_for_observation() {
+  local phase=$1 state=$2
+  for _ in {1..10}; do
+    if [[ -f "$observer_observations" ]] && python - "$observer_observations" "$phase" "$state" <<'PY'
+import json, sys
+with open(sys.argv[1]) as stream:
+    raise SystemExit(not any(json.loads(line).get("phase") == sys.argv[2] and json.loads(line).get("state") == sys.argv[3] for line in stream))
+PY
+    then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+stop_observer() {
+  [[ -n "$observer_pid" ]] || return 0
+  kill "$observer_pid" 2>/dev/null || true
+  wait "$observer_pid" || true
+  observer_pid=""
+  rm -f "$generated/availability.pid"
+  if [[ -f "$observer_report" ]]; then
+    readarray -t availability_values < <(python - "$observer_report" <<'PY'
+import json, sys
+r=json.load(open(sys.argv[1]))
+yn=lambda value, yes="healthy": yes if value else "not observed"
+print(yn(r["baseline_healthy_observed"]))
+print(yn(r["candidate_healthy_observed"]))
+print("yes" if r["outage_observed"] else "no")
+print(yn(r["recovery_observed"]))
+print("~%s seconds" % r["approximate_outage_duration_seconds"] if r["approximate_outage_duration_seconds"] is not None else "n/a")
+print(r["final_observer_state"])
+print(r["result"])
+PY
+)
+    availability_baseline=${availability_values[0]}
+    availability_candidate=${availability_values[1]}
+    availability_outage=${availability_values[2]}
+    availability_recovery=${availability_values[3]}
+    availability_duration=${availability_values[4]}
+    availability_final=${availability_values[5]}
+    availability_result=${availability_values[6]}
+  fi
+}
 
 write_incident_report() {
   [[ "$fault_mode" == "post_promotion_backend_failure" ]] || return 0
@@ -102,6 +164,14 @@ summary() {
       echo "| Rollback result | $rollback_result |"
       echo "| Restored stable release identity | \`$restored_identity\` |"
       echo "| Recovery verification result | $recovery_verification |"
+      echo "| Availability observer | $observer_mode |"
+      echo "| Baseline availability | $availability_baseline |"
+      echo "| Candidate availability | $availability_candidate |"
+      echo "| Controlled outage observed | $availability_outage |"
+      echo "| Recovery availability | $availability_recovery |"
+      echo "| Observed outage duration | $availability_duration |"
+      echo "| Final observer state | $availability_final |"
+      echo "| Availability evidence result | $availability_result |"
       echo "| Previous immutable release | \`${previous_ref:-not started}\` |"
       echo "| Newly active immutable release | \`$new_active\` |"
       echo "| Negative-path check | $negative_path |"
@@ -118,6 +188,7 @@ summary() {
 }
 cleanup() {
   local result=$?
+  stop_observer || true
   if (( result != 0 )); then
     echo "Staging deployment failed; container state and logs follow:" >&2
     "${compose[@]}" ps --all >&2 || true
@@ -142,6 +213,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+observer_mode=$("${controller[@]}" observer-mode "${AVAILABILITY_OBSERVER:-disabled}")
+if [[ "$observer_mode" == enabled ]]; then
+  python - "$observer_report" "${GITHUB_SHA:-local}" <<'PY'
+import json, sys
+from pathlib import Path
+from staging.availability_observer import build_report
+Path(sys.argv[1]).write_text(json.dumps(build_report([], 1, sys.argv[2]), indent=2) + "\n")
+PY
+fi
 active_ref=$("${controller[@]}" normalize "${BASELINE_IMAGE:?BASELINE_IMAGE is required}")
 candidate_ref=$("${controller[@]}" normalize "${CANDIDATE_IMAGE_INPUT:?CANDIDATE_IMAGE_INPUT is required}")
 fault_mode=$("${controller[@]}" fault-mode "${FAULT_MODE:-none}")
@@ -240,8 +320,18 @@ restore_active() {
 "${compose[@]}" up --detach --no-build active proxy
 "${compose[@]}" ps --all
 verify_topology false
+if [[ "$observer_mode" == enabled ]]; then
+  set_observer_phase baseline
+  python staging/availability_observer.py \
+    --observations "$observer_observations" --report "$observer_report" \
+    --phase-file "$observer_phase_file" --controller-commit "${GITHUB_SHA:-local}" \
+    --interval 1 --timeout 0.5 --max-duration 600 &
+  observer_pid=$!
+  printf '%s\n' "$observer_pid" > "$generated/availability.pid"
+fi
 readiness_started=$SECONDS
 verify_stable "$active_version" "$active_ref" "$active_revision"
+[[ "$observer_mode" != enabled ]] || wait_for_observation baseline healthy
 active_ready_seconds=$((SECONDS - readiness_started))
 active_validation="passed metadata, readiness, health, version, and release identity"
 previous_ref="$active_ref"
@@ -306,6 +396,10 @@ fi
   python -c 'import json,sys; assert json.load(sys.stdin) == {"status":"healthy"}'
 promotion_seconds=$((SECONDS - promotion_started))
 promotion="successful: candidate identity verified through stable route"
+if [[ "$observer_mode" == enabled ]]; then
+  set_observer_phase candidate
+  wait_for_observation candidate healthy
+fi
 
 if [[ "$fault_mode" == "post_promotion_backend_failure" ]]; then
   fault_injection="attempting unreachable candidate backend candidate:65535 after verified promotion"
@@ -322,6 +416,7 @@ if [[ "$fault_mode" == "post_promotion_backend_failure" ]]; then
     exit 1
   fi
   fault_injection="successful: valid route targeting unreachable candidate:65535 was applied"
+  set_observer_phase outage
 
   if verify_stable "$candidate_version" "$candidate_ref" "$candidate_revision"; then
     failure_detection="failed: injected route unexpectedly served the candidate"
@@ -329,5 +424,16 @@ if [[ "$fault_mode" == "post_promotion_backend_failure" ]]; then
     exit 1
   fi
   failure_detection="successful: bounded stable-route verification detected candidate outage"
+  [[ "$observer_mode" != enabled ]] || wait_for_observation outage unavailable
   restore_active || exit 1
+  if [[ "$observer_mode" == enabled ]]; then
+    set_observer_phase recovery
+    wait_for_observation recovery healthy
+    stop_observer
+    [[ "$availability_result" == success ]] || exit 1
+  fi
 fi
+
+# In non-fault runs the observer remains evidence-only and reports an incomplete
+# sequence without changing the established promotion result.
+[[ "$observer_mode" != enabled || "$fault_mode" == post_promotion_backend_failure ]] || stop_observer

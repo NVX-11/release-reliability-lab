@@ -16,12 +16,20 @@ SOURCE = "https://github.com/NVX-11/release-reliability-lab"
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 REVISION_RE = re.compile(r"[0-9a-f]{40}\Z")
 FAULT_MODES = {"none", "post_promotion_backend_failure"}
+OBSERVER_MODES = {"disabled", "enabled"}
 
 
 def normalize_fault_mode(value: str) -> str:
     """Reject unknown modes rather than silently enabling or ignoring a fault."""
     if value not in FAULT_MODES:
         raise ValueError(f"unsupported fault mode: {value!r}")
+    return value
+
+
+def normalize_observer_mode(value: str) -> str:
+    """Accept only the explicit evidence-observer modes."""
+    if value not in OBSERVER_MODES:
+        raise ValueError(f"unsupported availability observer mode: {value!r}")
     return value
 
 
@@ -128,6 +136,8 @@ def main() -> int:
     normalize.add_argument("image")
     fault_mode = commands.add_parser("fault-mode")
     fault_mode.add_argument("value")
+    observer_mode = commands.add_parser("observer-mode")
+    observer_mode.add_argument("value")
     metadata = commands.add_parser("metadata")
     metadata.add_argument("image")
     metadata.add_argument("inspect_json", type=Path)
@@ -148,6 +158,8 @@ def main() -> int:
             print(normalize_image(args.image))
         elif args.command == "fault-mode":
             print(normalize_fault_mode(args.value))
+        elif args.command == "observer-mode":
+            print(normalize_observer_mode(args.value))
         elif args.command == "metadata":
             documents = json.loads(args.inspect_json.read_text())
             if not isinstance(documents, list) or len(documents) != 1:

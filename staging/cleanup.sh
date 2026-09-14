@@ -12,6 +12,13 @@ export ACTIVE_IMAGE="${ACTIVE_IMAGE:-$cleanup_image}"
 export CANDIDATE_IMAGE="${CANDIDATE_IMAGE:-$cleanup_image}"
 
 cleanup_result=0
+if [[ -f staging/generated/availability.pid ]]; then
+  observer_pid=$(cat staging/generated/availability.pid)
+  if [[ "$observer_pid" =~ ^[0-9]+$ ]]; then
+    kill "$observer_pid" 2>/dev/null || true
+    wait "$observer_pid" 2>/dev/null || true
+  fi
+fi
 docker compose \
   --project-name release-reliability-staging \
   --file staging/compose.yml \

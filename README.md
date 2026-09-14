@@ -226,7 +226,10 @@ To run the staging exercise in GitHub:
 5. Leave **fault mode** set to `none` for the unchanged promotion exercise. To
    exercise rollback, explicitly select `post_promotion_backend_failure`. Run this
    option only from trusted `main` after review and merge.
-6. Select **Run workflow**. No deployment occurs on a pull request or CI push.
+6. Leave **availability observer** disabled for normal staging behavior. For the
+   post-merge Milestone 6 proof only, pair `enabled` with
+   `post_promotion_backend_failure`.
+7. Select **Run workflow**. No deployment occurs on a pull request or CI push.
 
 The controller pulls both exact digests using only the run's `GITHUB_TOKEN`,
 then requires each local `RepoDigests` identity and the OCI source, full Git
@@ -270,6 +273,17 @@ Controlled-fault runs also upload a machine-generated JSON incident report for
 14 days. It records both identities, the injection, detection and impact,
 rollback action, recovery proof, final stable identity, outcome, and elapsed
 time. It contains no credentials or runner host details.
+
+When explicitly enabled, a small independent observer makes its own one-second,
+short-timeout requests only to the stable Nginx endpoint at
+`http://127.0.0.1:8080/health`. It supplies evidence only: the release controller
+still owns health and identity validation, promotion, rollback, and recovery
+decisions. The observer records baseline and promoted health, an unavailable
+sample during the controlled fault, and healthy recovery after rollback. Its
+JSON artifact reports timestamps and an approximate outage duration constrained
+by the one-second probe interval, rather than claiming sub-second precision.
+The background process has a ten-minute maximum lifetime, is explicitly stopped
+and waited for, and exists only during the ephemeral GitHub Actions staging run.
 
 The manual workflow is also the bounded live staging integration test: it pulls
 the real baseline and candidate with `packages: read`, exercises actual Compose

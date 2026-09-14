@@ -20,6 +20,14 @@ on:
         options:
           - none
           - post_promotion_backend_failure
+      availability_observer:
+        description: "Independent stable-endpoint availability evidence"
+        required: true
+        default: disabled
+        type: choice
+        options:
+          - disabled
+          - enabled
 
 permissions:
   contents: read
@@ -36,6 +44,7 @@ jobs:
       BASELINE_IMAGE: ${{ inputs.baseline_image }}
       CANDIDATE_IMAGE_INPUT: ${{ inputs.candidate_image }}
       FAULT_MODE: ${{ inputs.fault_mode }}
+      AVAILABILITY_OBSERVER: ${{ inputs.availability_observer }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Safe interpolation values for independent diagnostics and cleanup. The
@@ -63,6 +72,15 @@ jobs:
         with:
           name: controlled-fault-incident-${{ github.run_id }}
           path: ${{ runner.temp }}/release-reliability-incident.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload independent availability report
+        if: always() && inputs.availability_observer == 'enabled'
+        uses: actions/upload-artifact@v4
+        with:
+          name: availability-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/availability-report.json
           if-no-files-found: error
           retention-days: 14
 
