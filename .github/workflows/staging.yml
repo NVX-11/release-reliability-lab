@@ -64,6 +64,7 @@ jobs:
       - name: Pull, verify, stage, and promote published images
         env:
           INCIDENT_REPORT_PATH: ${{ runner.temp }}/release-reliability-incident.json
+          AVAILABILITY_REPORT_PATH: ${{ runner.temp }}/availability-report.json
         run: bash staging/deploy.sh
 
       - name: Upload controlled-fault incident report

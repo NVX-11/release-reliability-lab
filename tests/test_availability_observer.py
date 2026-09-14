@@ -78,3 +78,18 @@ def test_workflow_default_summary_and_cleanup_process_management():
     assert 'wait "$observer_pid"' in deploy
     assert "availability.pid" in cleanup
     assert cleanup.index('kill "$observer_pid"') < cleanup.index("docker compose")
+
+
+def test_deployment_and_artifact_upload_share_runner_temp_report_path():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/staging.yml").read_text()
+    deployment_step = workflow.split(
+        "- name: Pull, verify, stage, and promote published images", 1
+    )[1].split("- name:", 1)[0]
+    upload_step = workflow.split("- name: Upload independent availability report", 1)[1].split(
+        "- name:", 1
+    )[0]
+    expected = "${{ runner.temp }}/availability-report.json"
+    assert f"AVAILABILITY_REPORT_PATH: {expected}" in deployment_step
+    assert f"path: {expected}" in upload_step
+    job_env = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
+    assert "AVAILABILITY_REPORT_PATH" not in job_env
