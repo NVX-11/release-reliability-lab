@@ -6,13 +6,9 @@ This project follows a small FastAPI service from tested container to immutable 
 
 **Release flow:** test and smoke-check → publish the exact tested image → stage by digest → validate candidate → promote → inject a controlled fault → verify rollback.
 
-<!-- IMAGE SLOT: Final architecture diagram
-Target path: docs/images/release-reliability-architecture.png
-When the image is ready, replace this comment with:
 <p align="center">
   <img src="docs/images/release-reliability-architecture.png" alt="Release Reliability Lab architecture" width="900">
 </p>
--->
 
 ## What this proves
 
@@ -35,29 +31,23 @@ Fault runs produce a machine-readable incident report; observer-enabled runs als
 
 ### Proof snapshots
 
-<!-- IMAGE SLOT: Verified promotion — 0.1.0 → 0.1.1
-Target path: docs/images/promotion-proof.png
-When the image is ready, replace this comment with:
+#### Verified promotion — 0.1.0 → 0.1.1
+
 <p align="center">
   <img src="docs/images/promotion-proof.png" alt="Verified release promotion from 0.1.0 to 0.1.1" width="900">
 </p>
--->
 
-<!-- IMAGE SLOT: Controlled failure and verified rollback
-Target path: docs/images/rollback-proof.png
-When the image is ready, replace this comment with:
+#### Controlled failure and verified rollback
+
 <p align="center">
   <img src="docs/images/rollback-proof.png" alt="Controlled failure and verified rollback to the previous release" width="900">
 </p>
--->
 
-<!-- IMAGE SLOT: Independent outage and recovery evidence
-Target path: docs/images/availability-proof.png
-When the image is ready, replace this comment with:
+#### Independent outage and recovery evidence
+
 <p align="center">
   <img src="docs/images/availability-proof.png" alt="Independent availability observer showing healthy, outage, and recovery states" width="900">
 </p>
--->
 
 ## Architecture
 
