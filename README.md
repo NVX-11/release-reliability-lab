@@ -87,16 +87,6 @@ Application version alone is not enough to identify a release. Before either ima
 
 Nginx supplies validated `X-Release-Digest` and `X-Release-Revision` headers. Stable-route verification requires the expected HTTP response, health/version payload, digest, and revision. The deployment controller commit is recorded separately from each application image's source revision.
 
-## How the reliability exercise works
-
-1. **Validate the releases.** Pull immutable baseline and candidate images and verify their digest and OCI metadata.
-2. **Establish a known-good baseline.** Start `active` and Nginx, then verify health, version, digest, and revision through the stable route.
-3. **Validate and promote the candidate.** Start `candidate`, validate it without changing traffic, then switch the stable route and verify the candidate identity end to end.
-4. **Inject a controlled failure.** After verified promotion, point Nginx at unreachable `candidate:65535`; bounded stable-route verification must detect the outage.
-5. **Roll back and prove recovery.** Restore the previous route and require the exact baseline health, version, digest, and revision to pass again. The run records its evidence and cleans up all staging resources.
-
-Candidate validation failure leaves the active route unchanged. A controlled-fault run succeeds only if the expected outage is detected and recovery is verified.
-
 ## Availability evidence
 
 | Evidence source | Question answered |
